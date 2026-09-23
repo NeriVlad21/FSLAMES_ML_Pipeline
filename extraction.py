@@ -18,8 +18,13 @@ class MediaSample:
     expected_hand: str
 
 
-def infer_expected_hand(path: Path, num_hands: int) -> str:
-    tokens = path.stem.lower().replace("-", "_").split("_")
+def infer_expected_hand(path: Path, num_hands: int, label: str = "") -> str:
+    stem = path.stem.lower().replace("-", "_")
+    # Drop the label prefix so labels like RIGHT or NO_LEFT_TURN aren't read as roles.
+    prefix = label.lower().replace("-", "_") + "_"
+    if label and stem.startswith(prefix):
+        stem = stem[len(prefix):]
+    tokens = stem.split("_")
     matches = [name for name in ("left", "right", "both") if name in tokens]
     if len(matches) != 1:
         raise SystemExit(
@@ -56,7 +61,7 @@ def discover_samples(input_dir: Path, layout: str, num_hands: int) -> list[Media
             label.strip(),
             participant.strip(),
             relative.as_posix(),
-            infer_expected_hand(path, num_hands),
+            infer_expected_hand(path, num_hands, label.strip()),
         ))
     if not samples:
         raise SystemExit("ERROR: no supported videos or images were found.")
