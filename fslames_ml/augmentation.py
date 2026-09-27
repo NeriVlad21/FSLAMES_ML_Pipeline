@@ -17,8 +17,14 @@ def augment_landmarks(
     """
     if copies <= 0:
         return features, targets
-    if features.ndim not in (2, 3) or features.shape[-1] % 63 != 0:
+    if features.ndim not in (2, 3):
         raise ValueError("Expected [rows, features] or [rows, time, features].")
+    landmark_width = (features.shape[-1] // 63) * 63
+    trajectory_width = features.shape[-1] - landmark_width
+    if landmark_width not in (63, 126) or trajectory_width not in (0, 4):
+        raise ValueError(
+            "Expected 63/126 landmarks, optionally followed by dx,dy,vx,vy."
+        )
     rng = np.random.default_rng(seed)
     batches = [features.astype(np.float32, copy=False)]
     labels = [targets]
@@ -31,12 +37,30 @@ def augment_landmarks(
         sines = np.sin(angles) * scales
         flat = augmented.reshape(sample_count, -1, augmented.shape[-1])
         for sample in range(sample_count):
-            row = flat[sample].reshape(-1, 3)
-            x = row[:, 0].copy()
-            y = row[:, 1].copy()
-            row[:, 0] = x * cosines[sample] - y * sines[sample]
-            row[:, 1] = x * sines[sample] + y * cosines[sample]
-        augmented += rng.normal(0.0, 0.004, size=augmented.shape).astype(np.float32)
+            for offset in range(0, landmark_width, 3):
+                x = flat[sample, :, offset].copy()
+                y = flat[sample, :, offset + 1].copy()
+                flat[sample, :, offset] = (
+                    x * cosines[sample] - y * sines[sample]
+                )
+                flat[sample, :, offset + 1] = (
+                    x * sines[sample] + y * cosines[sample]
+                )
+            if trajectory_width:
+                trajectory = flat[sample, :, landmark_width:]
+                for offset in (0, 2):
+                    tx = trajectory[:, offset].copy()
+                    ty = trajectory[:, offset + 1].copy()
+                    trajectory[:, offset] = (
+                        tx * cosines[sample] - ty * sines[sample]
+                    )
+                    trajectory[:, offset + 1] = (
+                        tx * sines[sample] + ty * cosines[sample]
+                    )
+        noise = rng.normal(0.0, 0.004, size=augmented.shape).astype(np.float32)
+        if trajectory_width:
+            noise[..., landmark_width:] *= 0.5
+        augmented += noise
         batches.append(augmented)
         labels.append(targets.copy())
     return np.concatenate(batches, axis=0), np.concatenate(labels, axis=0)

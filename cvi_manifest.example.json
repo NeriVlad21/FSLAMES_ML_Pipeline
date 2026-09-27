@@ -1,0 +1,7 @@
+{
+  "experts": ["SPED_FSL_EXPERT_1", "SPED_FSL_EXPERT_2"],
+  "items": [
+    {"label": "REPLACE_WITH_SIGN_LABEL", "expert_id": "SPED_FSL_EXPERT_1", "approved": true},
+    {"label": "REPLACE_WITH_SIGN_LABEL", "expert_id": "SPED_FSL_EXPERT_2", "approved": true}
+  ]
+}

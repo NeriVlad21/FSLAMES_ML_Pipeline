@@ -1,0 +1,2 @@
+-r requirements.txt
+inference-sdk>=1.5

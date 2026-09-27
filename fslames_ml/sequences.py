@@ -40,7 +40,29 @@ def build_sequences(dataset: LoadedDataset, length: int) -> SequenceDataset:
         group_targets = np.unique(dataset.targets[indices])
         if len(group_targets) != 1:
             fail(f"Source {source_file} contains multiple labels.")
-        sequences.append(_resample(dataset.features[indices], length))
+        landmarks = _resample(dataset.features[indices], length)
+        ordered = group.sort_values("frame_index")
+        for column in ("hand_center_x", "hand_center_y", "palm_size"):
+            if column not in ordered.columns:
+                fail(
+                    "Dynamic training requires extractor metadata columns: "
+                    "hand_center_x, hand_center_y, palm_size."
+                )
+        centers = ordered[["hand_center_x", "hand_center_y"]].to_numpy(
+            dtype=np.float32
+        )
+        palms = ordered["palm_size"].to_numpy(dtype=np.float32)
+        centers = _resample(centers, length)
+        palms = _resample(palms[:, None], length)[:, 0]
+        scale = max(float(np.median(palms)), 1e-3)
+        displacement = (centers - centers[0]) / scale
+        velocity = np.vstack(
+            [np.zeros((1, 2), dtype=np.float32), np.diff(displacement, axis=0)]
+        )
+        trajectory = np.concatenate([displacement, velocity], axis=1)
+        sequences.append(
+            np.concatenate([landmarks, trajectory], axis=1).astype(np.float32)
+        )
         targets.append(int(group_targets[0]))
         records.append(
             {

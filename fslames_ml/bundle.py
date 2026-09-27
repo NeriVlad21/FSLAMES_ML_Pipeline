@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Sequence
 
 
-BUNDLE_VERSION = 1
+BUNDLE_VERSION = 2
 MODEL_FILENAME = "fslames_landmark_classifier.tflite"
 MANIFEST_FILENAME = "fslames_classifier_manifest.json"
 
@@ -67,6 +67,8 @@ def create_mobile_bundle(output_dir: Path, model_path: Path, labels: Sequence[st
         "input_contract": metadata["input_contract"],
         "test_accuracy": metadata["metrics"]["accuracy"],
         "macro_f1": metadata["metrics"]["macro_f1"],
+        "decision_policy": metadata.get("decision_policy", {}),
+        "cvi": metadata.get("cvi", metadata.get("quality", {}).get("cvi", {})),
     }
     (bundle / MANIFEST_FILENAME).write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
     return bundle
