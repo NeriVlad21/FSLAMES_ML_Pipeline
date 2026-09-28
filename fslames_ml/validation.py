@@ -17,7 +17,12 @@ def require_expert_cvi(path: Path | None, labels: list[str], *, allow_unvalidate
         )
     if not path.is_file():
         fail(f"CVI manifest does not exist: {path}")
-    payload = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        fail(f"CVI manifest is not valid JSON: {path} ({exc})")
+    if not isinstance(payload, dict):
+        fail("CVI manifest must be a JSON object with 'experts' and 'items'.")
     experts = {str(value).strip() for value in payload.get("experts", []) if str(value).strip()}
     if len(experts) < 2:
         fail("CVI manifest must name at least two independent experts.")
@@ -39,3 +44,39 @@ def require_expert_cvi(path: Path | None, labels: list[str], *, allow_unvalidate
         "required_approvals_per_label": 2,
         "labels_approved": len(approvals),
     }
+
+
+def add_release_arguments(parser) -> None:
+    """CLI flags shared by both trainers for the CVI gate and decision policy."""
+    from .calibration import DEFAULT_MIN_MARGIN, DEFAULT_TARGET_THRESHOLD
+
+    parser.add_argument(
+        "--cvi-manifest", type=Path, default=None,
+        help="JSON with two independent expert approvals per label (see cvi_manifest.example.json).",
+    )
+    parser.add_argument(
+        "--allow-unvalidated-for-development", action="store_true",
+        help="Train without expert CVI. The bundle is marked release_ready=false.",
+    )
+    parser.add_argument(
+        "--target-threshold", type=float, default=DEFAULT_TARGET_THRESHOLD,
+        help="Minimum probability of the requested sign (default 0.30).",
+    )
+    parser.add_argument(
+        "--min-margin", type=float, default=DEFAULT_MIN_MARGIN,
+        help="Required lead of the requested sign over the nearest other sign.",
+    )
+
+
+def resolve_cvi(args, labels: list[str]) -> dict:
+    """Apply the CVI gate; --inspect-only reports status without failing."""
+    if not 0.0 < args.target_threshold <= 1.0:
+        fail("--target-threshold must be in (0, 1].")
+    if not 0.0 <= args.min_margin < 1.0:
+        fail("--min-margin must be in [0, 1).")
+    if args.inspect_only and args.cvi_manifest is None:
+        return {"status": "not_provided"}
+    return require_expert_cvi(
+        args.cvi_manifest, labels,
+        allow_unvalidated=args.allow_unvalidated_for_development,
+    )

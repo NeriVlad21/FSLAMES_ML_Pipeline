@@ -9,6 +9,15 @@ from .data import LoadedDataset
 from .errors import fail
 
 
+# Appended to every frame's 63/126 landmark values, in this order. Displacement
+# is the hand center relative to the first resampled frame, divided by the
+# sequence's median palm size; velocity is its per-step difference (first
+# step = 0). Dynamic per-frame width is therefore 67 (one hand) or 130 (two).
+TRAJECTORY_COLUMNS = (
+    "hand_center_dx", "hand_center_dy", "hand_center_vx", "hand_center_vy",
+)
+TRAJECTORY_METADATA_COLUMNS = ("hand_center_x", "hand_center_y", "palm_size")
+
 @dataclass(frozen=True)
 class SequenceDataset:
     frame: pd.DataFrame
@@ -30,6 +39,11 @@ def build_sequences(dataset: LoadedDataset, length: int) -> SequenceDataset:
     missing = required - set(dataset.frame.columns)
     if missing:
         fail("Dynamic training requires CSV columns: " + ", ".join(sorted(missing)))
+    if set(TRAJECTORY_METADATA_COLUMNS) - set(dataset.frame.columns):
+        fail(
+            "Dynamic training requires extractor metadata columns: "
+            + ", ".join(TRAJECTORY_METADATA_COLUMNS) + "."
+        )
 
     sequences: list[np.ndarray] = []
     targets: list[int] = []
@@ -41,13 +55,7 @@ def build_sequences(dataset: LoadedDataset, length: int) -> SequenceDataset:
         if len(group_targets) != 1:
             fail(f"Source {source_file} contains multiple labels.")
         landmarks = _resample(dataset.features[indices], length)
-        ordered = group.sort_values("frame_index")
-        for column in ("hand_center_x", "hand_center_y", "palm_size"):
-            if column not in ordered.columns:
-                fail(
-                    "Dynamic training requires extractor metadata columns: "
-                    "hand_center_x, hand_center_y, palm_size."
-                )
+        ordered = group.loc[indices]
         centers = ordered[["hand_center_x", "hand_center_y"]].to_numpy(
             dtype=np.float32
         )

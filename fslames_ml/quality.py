@@ -55,6 +55,12 @@ def validate_dataset_quality(
         fail("Each CSV must contain exactly one required_hands value: 1 or 2.")
     sign_type = next(iter(sign_types))
     required_hands = int(next(iter(hand_counts)))
+    landmark_hands = 2 if "h1_x0" in frame.columns else 1
+    if landmark_hands != required_hands:
+        fail(
+            f"required_hands={required_hands} but the CSV has landmark columns "
+            f"for {landmark_hands} hand(s). Re-extract with the matching --num-hands."
+        )
 
     source_meta = frame.groupby("source_file").agg(
         labels=("label", "nunique"),

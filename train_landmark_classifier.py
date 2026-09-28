@@ -13,6 +13,7 @@ import pandas as pd
 
 from fslames_ml.bundle import create_mobile_bundle, write_training_metadata
 from fslames_ml.augmentation import augment_landmarks
+from fslames_ml.calibration import calibrate_decision_policy, evaluate_decision_policy
 from fslames_ml.data import load_dataset
 from fslames_ml.errors import fail
 from fslames_ml.metrics import classification_metrics, confusion_matrix, write_csv_matrix
@@ -25,6 +26,7 @@ from fslames_ml.modeling import (
 )
 from fslames_ml.quality import validate_dataset_quality
 from fslames_ml.splitting import make_splits
+from fslames_ml.validation import add_release_arguments, resolve_cvi
 
 
 def parse_args() -> argparse.Namespace:
@@ -50,6 +52,7 @@ def parse_args() -> argparse.Namespace:
         default=4,
         help="Mild synthetic copies per real training row. Validation/test stay real.",
     )
+    add_release_arguments(parser)
     return parser.parse_args()
 
 
@@ -64,6 +67,7 @@ def main() -> None:
         kinds = set(dataset.frame["sign_type"].astype(str).str.lower())
         if kinds != {"static"}:
             fail("This trainer accepts static signs only. Use train_sequence_classifier.py for dynamic signs.")
+    cvi = resolve_cvi(args, dataset.labels)
     splits = make_splits(
         dataset.frame,
         dataset.targets,
@@ -89,6 +93,7 @@ def main() -> None:
             else "Frame-level split may overestimate generalization accuracy."
         ),
         "quality": quality_summary.to_dict(),
+        "cvi_status": cvi["status"],
     }
     print(json.dumps(summary, indent=2))
     if args.inspect_only:
@@ -144,6 +149,16 @@ def main() -> None:
         dataset.targets[splits.testing], predictions, len(dataset.labels)
     )
     metrics = classification_metrics(matrix, dataset.labels)
+    decision_policy = calibrate_decision_policy(
+        model.predict(dataset.features[splits.validation], verbose=0),
+        dataset.targets[splits.validation],
+        dataset.labels,
+        target_threshold=args.target_threshold,
+        min_margin=args.min_margin,
+    )
+    metrics["target_aware_test"] = evaluate_decision_policy(
+        probabilities, dataset.targets[splits.testing], dataset.labels, decision_policy
+    )
 
     tflite_path = args.output_dir / "fslames_landmark_classifier.tflite"
     export_tflite(tf, model, tflite_path, args.quantization)
@@ -167,16 +182,15 @@ def main() -> None:
         quantization=args.quantization,
         metrics=metrics,
         verification=verification,
-    )
-    metadata["augmentation"] = {
-        "training_only": True,
-        "copies_per_real_sample": args.augmentation_copies,
-        "rotation_radians": 0.12,
-        "scale_range": [0.92, 1.08],
-        "gaussian_noise_stddev": 0.004,
-    }
-    (args.output_dir / "model_metadata.json").write_text(
-        json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8"
+        decision_policy=decision_policy,
+        cvi=cvi,
+        augmentation={
+            "training_only": True,
+            "copies_per_real_sample": args.augmentation_copies,
+            "rotation_radians": 0.12,
+            "scale_range": [0.92, 1.08],
+            "gaussian_noise_stddev": 0.004,
+        },
     )
     bundle = create_mobile_bundle(
         args.output_dir, tflite_path, dataset.labels, metadata
@@ -187,6 +201,8 @@ def main() -> None:
     print(f"Held-out accuracy: {metrics['accuracy']:.4f}")
     print(f"Macro F1: {metrics['macro_f1']:.4f}")
     print("TFLite verification: PASSED")
+    if not metadata["release_ready"]:
+        print("WARNING: development-only bundle (no expert CVI); not for release.")
 
 
 if __name__ == "__main__":

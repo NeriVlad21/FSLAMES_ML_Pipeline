@@ -14,6 +14,14 @@ py -3.11 -m venv .venv-ml
 .\.venv-ml\Scripts\python.exe -m pip install -r tools\ml\requirements.txt
 ```
 
+The CLI scripts import the `fslames_ml` package. Running them from their own
+folder works on a fresh checkout; to import the package from anywhere (tests,
+notebooks, other folders), install it in editable mode:
+
+```powershell
+.\.venv-ml\Scripts\python.exe -m pip install -e "tools\ml[dev]"
+```
+
 Download `hand_landmarker.task` from the official MediaPipe model collection.
 
 ## Raw dataset folders
@@ -87,8 +95,12 @@ Dynamic two-hand videos:
 ```
 
 One-hand CSVs contain 63 values per frame. Two-hand CSVs contain 126 values.
-For two-hand samples, hands are consistently ordered and both are translated
-relative to the first hand's wrist, preserving their spatial relationship.
+For two-hand samples, hands are consistently ordered (MediaPipe `Left` then
+`Right`; if both hands receive the same handedness label, the hand with the
+smaller wrist x comes first) and both are translated relative to the first
+hand's wrist, preserving their spatial relationship. Static two-hand signs are
+still single-frame samples: they use the static trainer and never need video
+or temporal behaviour.
 
 ## Validate coverage and capture consistency
 
@@ -135,6 +147,36 @@ Use the same sequence trainer for `dynamic_both.csv`. It resamples every video
 to a fixed temporal length and applies each spatial augmentation consistently
 across the full sequence and both hands.
 
+Because wrist-relative landmarks alone lose where the hand travels, each
+dynamic frame also carries four movement values after the landmarks:
+`hand_center_dx, hand_center_dy` (hand-center displacement from the first
+frame divided by the sequence's median palm size) and `hand_center_vx,
+hand_center_vy` (their per-step velocity). The model input is therefore
+`[1, T, 67]` for one hand and `[1, T, 130]` for two hands. The exact order and
+formulas are written to `input_contract` in the manifest, and export fails if
+the TFLite input shape differs from that contract.
+
+## Expert validation (CVI) gate
+
+Training a release model requires `--cvi-manifest` naming two independent
+experts, with both approving every trained label (see
+`cvi_manifest.example.json`). For unvalidated experiments only, pass
+`--allow-unvalidated-for-development`; such bundles are marked
+`release_ready: false` and the installer refuses them unless
+`--allow-development-bundle` is given. `--inspect-only` reports the CVI status
+without enforcing it.
+
+## Target-aware recognition policy
+
+An attempt at a requested sign is accepted only when the requested sign is the
+model's top-1 prediction, its probability is at least 30%
+(`--target-threshold 0.30`), and it leads the nearest other known sign by at
+least `--min-margin` (default 0.06). A recognizable wrong sign is therefore
+rejected even if the requested sign still scores above 30%. The policy is
+written to the manifest as `decision_policy`, together with its measured
+correct-sign acceptance and wrong-sign false-acceptance rates on the
+validation participants; test-participant rates are in `model_metadata.json`.
+
 ## Five-person evaluation
 
 With five participants, the default split uses three people for training, one
@@ -147,19 +189,52 @@ does not create new people or guarantee real-world accuracy.
 
 ## Flutter installation and fallback
 
-The current FSLAMES runtime accepts only the static, single-hand bundle:
+There are four independent model slots, each with its own file names so all
+four can be installed side by side:
+
+| Slot | Trainer | Input shape | Files |
+| --- | --- | --- | --- |
+| `static_single` | landmark | `[1, 63]` | `fslames_static_single_classifier.tflite`, `fslames_static_single_manifest.json` |
+| `static_both` | landmark | `[1, 126]` | `fslames_static_both_classifier.tflite`, `fslames_static_both_manifest.json` |
+| `dynamic_single` | sequence | `[1, T, 67]` | `fslames_dynamic_single_classifier.tflite`, `fslames_dynamic_single_manifest.json` |
+| `dynamic_both` | sequence | `[1, T, 130]` | `fslames_dynamic_both_classifier.tflite`, `fslames_dynamic_both_manifest.json` |
 
 ```powershell
 .\.venv-ml\Scripts\python.exe tools\ml\install_mobile_bundle.py `
   output_static_single\mobile_bundle
 ```
 
-The installer rejects incompatible two-hand or sequence bundles. The Android
-runtime also validates the model kind, preprocessing, input tensor, output
-size, labels, and bundle version. If any model is missing, rejected, or fails
-to load, FSLAMES continues using its existing CVI-validated reference/deviation
-scorer. Pass/fail, feedback, and XP remain on that fallback even when the
-static classifier is available.
+The installer validates bundle version 2, the slot, model kind, input
+contract, labels, decision policy, and CVI release status. The Flutter runtime
+must read these per-slot files and bundle version 2. If any model is missing,
+rejected, or fails to load, FSLAMES continues using its existing CVI-validated
+reference/deviation scorer.
+
+## Optional Roboflow dataset audit
+
+Roboflow is never required for training or by the mobile app; normal FSLAMES
+practice stays offline. As a second opinion on raw media labels, you can
+compare folder labels against the Roboflow model `fsl-fnlzs/3`:
+
+```powershell
+.\.venv-ml\Scripts\python.exe -m pip install -r tools\ml\requirements-roboflow.txt
+$env:ROBOFLOW_API_KEY = "<your key>"
+.\.venv-ml\Scripts\python.exe tools\ml\audit_with_roboflow.py raw_static_single `
+  --num-hands 1 --output roboflow_audit.csv
+```
+
+The key is read only from `ROBOFLOW_API_KEY`. The tool writes a report outside
+the dataset folder and never relabels or modifies source media; mismatches
+are for human review.
+
+## Tests
+
+```powershell
+.\.venv-ml\Scripts\python.exe -m pytest tools\ml\tests
+```
+
+Tests use synthetic CSVs only. The TFLite contract test is skipped when
+TensorFlow is not installed.
 
 ## Outputs
 

@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fslames-ml"
+version = "0.2.0"
+description = "FSLAMES landmark extraction, training, and TFLite mobile-bundle pipeline."
+requires-python = ">=3.10,<3.12"
+readme = "README.md"
+dependencies = [
+    "numpy>=1.24,<2.0",
+    "pandas>=2.0,<3.0",
+]
+
+[project.optional-dependencies]
+# Training/extraction stack (same pins as requirements.txt).
+train = [
+    "tensorflow>=2.15,<2.19",
+    "opencv-python>=4.9,<5.0",
+    "mediapipe>=0.10,<0.11",
+]
+# Optional dataset audit only; never needed for training or the mobile app.
+roboflow = ["inference-sdk>=1.5", "opencv-python>=4.9,<5.0"]
+dev = ["pytest>=7"]
+
+[tool.setuptools]
+packages = ["fslames_ml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

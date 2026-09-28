@@ -13,6 +13,7 @@ import pandas as pd
 
 from fslames_ml.augmentation import augment_landmarks
 from fslames_ml.bundle import create_mobile_bundle, write_training_metadata
+from fslames_ml.calibration import calibrate_decision_policy, evaluate_decision_policy
 from fslames_ml.data import load_dataset
 from fslames_ml.errors import fail
 from fslames_ml.metrics import classification_metrics, confusion_matrix, write_csv_matrix
@@ -26,6 +27,7 @@ from fslames_ml.modeling import (
 from fslames_ml.sequences import build_sequences
 from fslames_ml.splitting import make_splits
 from fslames_ml.quality import validate_dataset_quality
+from fslames_ml.validation import add_release_arguments, resolve_cvi
 
 
 def parse_args() -> argparse.Namespace:
@@ -39,6 +41,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=2026)
     parser.add_argument("--quantization", choices=("float16", "dynamic", "none"), default="float16")
     parser.add_argument("--inspect-only", action="store_true")
+    add_release_arguments(parser)
     return parser.parse_args()
 
 
@@ -52,6 +55,7 @@ def main() -> None:
         kinds = set(dataset.frame["sign_type"].astype(str).str.lower())
         if kinds != {"dynamic"}:
             fail("The sequence trainer accepts dynamic-sign CSVs only.")
+    cvi = resolve_cvi(args, dataset.labels)
     sequences = build_sequences(dataset, args.sequence_length)
     splits = make_splits(
         sequences.frame, sequences.targets, "participant_id", 0.2, 0.2, args.seed
@@ -65,6 +69,7 @@ def main() -> None:
         "labels": dataset.labels,
         "split": asdict(splits.summary),
         "quality": quality_summary.to_dict(),
+        "cvi_status": cvi["status"],
     }
     print(json.dumps(summary, indent=2))
     if args.inspect_only:
@@ -103,7 +108,17 @@ def main() -> None:
     predictions = np.argmax(probabilities, axis=1).astype(np.int32)
     matrix = confusion_matrix(sequences.targets[splits.testing], predictions, len(dataset.labels))
     metrics = classification_metrics(matrix, dataset.labels)
-    tflite_path = args.output_dir / "fslames_landmark_classifier.tflite"
+    decision_policy = calibrate_decision_policy(
+        model.predict(sequences.features[splits.validation], verbose=0),
+        sequences.targets[splits.validation],
+        dataset.labels,
+        target_threshold=args.target_threshold,
+        min_margin=args.min_margin,
+    )
+    metrics["target_aware_test"] = evaluate_decision_policy(
+        probabilities, sequences.targets[splits.testing], dataset.labels, decision_policy
+    )
+    tflite_path = args.output_dir / "fslames_sequence_classifier.tflite"
     export_tflite(tf, model, tflite_path, args.quantization)
     verification = verify_tflite(tf, model, tflite_path, sequences.features[splits.testing[0]])
     pd.DataFrame(history.history).to_csv(args.output_dir / "training_history.csv", index=False)
@@ -121,19 +136,26 @@ def main() -> None:
         metrics=metrics,
         verification=verification,
         model_kind=model_kind,
-    )
-    metadata["augmentation"] = {
-        "training_only": True,
-        "copies_per_real_sequence": args.augmentation_copies,
-    }
-    metadata["input_contract"]["sequence_length"] = args.sequence_length
-    (args.output_dir / "model_metadata.json").write_text(
-        json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8"
+        sequence_length=args.sequence_length,
+        decision_policy=decision_policy,
+        cvi=cvi,
+        augmentation={
+            "training_only": True,
+            "copies_per_real_sequence": args.augmentation_copies,
+            "rotation_radians": 0.12,
+            "scale_range": [0.92, 1.08],
+            "gaussian_noise_stddev": 0.004,
+            "trajectory_noise_stddev": 0.002,
+            "same_transform_for_every_frame_and_hand": True,
+        },
     )
     bundle = create_mobile_bundle(args.output_dir, tflite_path, dataset.labels, metadata)
     print(f"Saved dynamic model: {tflite_path}")
     print(f"Saved bundle: {bundle}")
     print(f"Held-out participant accuracy: {metrics['accuracy']:.4f}")
+    print("TFLite verification: PASSED")
+    if not metadata["release_ready"]:
+        print("WARNING: development-only bundle (no expert CVI); not for release.")
 
 
 if __name__ == "__main__":

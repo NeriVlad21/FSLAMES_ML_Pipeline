@@ -116,12 +116,24 @@ def selected_detections(result, num_hands: int):
         name = category.category_name if category else "Unknown"
         score = float(category.score) if category else 0.0
         detected.append((landmarks, name, score))
-    detected.sort(
-        key=lambda item: ({"Left": 0, "Right": 1}.get(item[1], 2), -item[2])
-    )
     if num_hands == 1:
         detected.sort(key=lambda item: item[2], reverse=True)
-    return detected[:num_hands]
+        return detected[:1]
+    detected.sort(key=lambda item: item[2], reverse=True)
+    return order_two_hands(detected[:2])
+
+
+def order_two_hands(detected):
+    """Order two hands consistently: MediaPipe Left then Right.
+
+    When handedness is ambiguous (both hands labelled the same, or unknown),
+    fall back to the hand whose wrist has the smaller image x first, so h0/h1
+    never swap between frames because of detection score.
+    """
+    names = [item[1] for item in detected]
+    if sorted(names) == ["Left", "Right"]:
+        return sorted(detected, key=lambda item: 0 if item[1] == "Left" else 1)
+    return sorted(detected, key=lambda item: float(item[0][0].x))
 
 
 def capture_quality(cv2, frame, detections) -> tuple[float, float, float, float]:
