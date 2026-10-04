@@ -26,6 +26,8 @@ from fslames_ml.modeling import (
 from fslames_ml.sequences import build_sequences
 from fslames_ml.splitting import make_splits
 from fslames_ml.quality import validate_dataset_quality
+from fslames_ml.validation import require_expert_cvi
+from fslames_ml.calibration import calibrate_decision_policy
 
 
 def parse_args() -> argparse.Namespace:
@@ -39,6 +41,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=2026)
     parser.add_argument("--quantization", choices=("float16", "dynamic", "none"), default="float16")
     parser.add_argument("--inspect-only", action="store_true")
+    parser.add_argument("--cvi-manifest", type=Path)
+    parser.add_argument("--allow-unvalidated-for-development", action="store_true")
     return parser.parse_args()
 
 
@@ -48,6 +52,11 @@ def main() -> None:
     np.random.seed(args.seed)
     dataset = load_dataset(args.csv, "label", "participant_id")
     quality_summary = validate_dataset_quality(dataset.frame)
+    cvi = require_expert_cvi(
+        args.cvi_manifest,
+        dataset.labels,
+        allow_unvalidated=args.allow_unvalidated_for_development,
+    )
     if "sign_type" in dataset.frame.columns:
         kinds = set(dataset.frame["sign_type"].astype(str).str.lower())
         if kinds != {"dynamic"}:
@@ -61,10 +70,13 @@ def main() -> None:
         "source_sequences": int(len(sequences.frame)),
         "sequence_length": args.sequence_length,
         "features_per_frame": int(sequences.features.shape[-1]),
+        "landmark_features_per_frame": len(dataset.feature_columns),
+        "trajectory_features": ["center_dx", "center_dy", "velocity_x", "velocity_y"],
         "hands_represented": dataset.hand_count,
         "labels": dataset.labels,
         "split": asdict(splits.summary),
         "quality": quality_summary.to_dict(),
+        "cvi": cvi,
     }
     print(json.dumps(summary, indent=2))
     if args.inspect_only:
@@ -99,6 +111,14 @@ def main() -> None:
         verbose=2,
     )
     model = tf.keras.models.load_model(keras_path)
+    validation_probabilities = model.predict(
+        sequences.features[splits.validation], verbose=0
+    )
+    decision_policy = calibrate_decision_policy(
+        validation_probabilities,
+        sequences.targets[splits.validation],
+        dataset.labels,
+    )
     probabilities = model.predict(sequences.features[splits.testing], verbose=0)
     predictions = np.argmax(probabilities, axis=1).astype(np.int32)
     matrix = confusion_matrix(sequences.targets[splits.testing], predictions, len(dataset.labels))
@@ -116,7 +136,13 @@ def main() -> None:
     metadata = write_training_metadata(
         args.output_dir / "model_metadata.json",
         dataset_summary=summary,
-        feature_columns=dataset.feature_columns,
+        feature_columns=[
+            *dataset.feature_columns,
+            "center_dx",
+            "center_dy",
+            "velocity_x",
+            "velocity_y",
+        ],
         quantization=args.quantization,
         metrics=metrics,
         verification=verification,
@@ -127,6 +153,10 @@ def main() -> None:
         "copies_per_real_sequence": args.augmentation_copies,
     }
     metadata["input_contract"]["sequence_length"] = args.sequence_length
+    metadata["input_contract"]["preprocessing"] = (
+        "wrist_relative_xyz_plus_palm_normalized_trajectory"
+    )
+    metadata["decision_policy"] = decision_policy
     (args.output_dir / "model_metadata.json").write_text(
         json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8"
     )

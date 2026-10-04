@@ -25,6 +25,8 @@ from fslames_ml.modeling import (
 )
 from fslames_ml.quality import validate_dataset_quality
 from fslames_ml.splitting import make_splits
+from fslames_ml.validation import require_expert_cvi
+from fslames_ml.calibration import calibrate_decision_policy
 
 
 def parse_args() -> argparse.Namespace:
@@ -44,6 +46,8 @@ def parse_args() -> argparse.Namespace:
         "--quantization", choices=("float16", "dynamic", "none"), default="float16"
     )
     parser.add_argument("--inspect-only", action="store_true")
+    parser.add_argument("--cvi-manifest", type=Path)
+    parser.add_argument("--allow-unvalidated-for-development", action="store_true")
     parser.add_argument(
         "--augmentation-copies",
         type=int,
@@ -60,6 +64,11 @@ def main() -> None:
 
     dataset = load_dataset(args.csv, args.label_column, args.source_column)
     quality_summary = validate_dataset_quality(dataset.frame)
+    cvi = require_expert_cvi(
+        args.cvi_manifest,
+        dataset.labels,
+        allow_unvalidated=args.allow_unvalidated_for_development,
+    )
     if "sign_type" in dataset.frame.columns:
         kinds = set(dataset.frame["sign_type"].astype(str).str.lower())
         if kinds != {"static"}:
@@ -89,6 +98,7 @@ def main() -> None:
             else "Frame-level split may overestimate generalization accuracy."
         ),
         "quality": quality_summary.to_dict(),
+        "cvi": cvi,
     }
     print(json.dumps(summary, indent=2))
     if args.inspect_only:
@@ -138,6 +148,14 @@ def main() -> None:
         verbose=2,
     )
     model = tf.keras.models.load_model(keras_path)
+    validation_probabilities = model.predict(
+        dataset.features[splits.validation], verbose=0
+    )
+    decision_policy = calibrate_decision_policy(
+        validation_probabilities,
+        dataset.targets[splits.validation],
+        dataset.labels,
+    )
     probabilities = model.predict(dataset.features[splits.testing], verbose=0)
     predictions = np.argmax(probabilities, axis=1).astype(np.int32)
     matrix = confusion_matrix(
@@ -168,6 +186,7 @@ def main() -> None:
         metrics=metrics,
         verification=verification,
     )
+    metadata["decision_policy"] = decision_policy
     metadata["augmentation"] = {
         "training_only": True,
         "copies_per_real_sample": args.augmentation_copies,

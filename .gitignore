@@ -1,0 +1,6 @@
+__pycache__/
+*.py[cod]
+.venv*/
+*_training_output/
+training_output/
+roboflow_audit.json

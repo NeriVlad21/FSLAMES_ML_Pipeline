@@ -11,7 +11,7 @@ Use Python 3.10 or 3.11:
 
 ```powershell
 py -3.11 -m venv .venv-ml
-.\.venv-ml\Scripts\python.exe -m pip install -r tools\ml\requirements.txt
+.\.venv-ml\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
 Download `hand_landmarker.task` from the official MediaPipe model collection.
@@ -57,7 +57,7 @@ Filenames must contain exactly one role token: `_right`, `_left`, or `_both`.
 Static one-hand images/videos:
 
 ```powershell
-.\.venv-ml\Scripts\python.exe tools\ml\extract_landmarks.py raw_static_single `
+.\.venv-ml\Scripts\python.exe extract_landmarks.py raw_static_single `
   --model hand_landmarker.task --output static_single.csv `
   --num-hands 1 --sign-type static
 ```
@@ -65,7 +65,7 @@ Static one-hand images/videos:
 Static two-hand images/videos:
 
 ```powershell
-.\.venv-ml\Scripts\python.exe tools\ml\extract_landmarks.py raw_static_both `
+.\.venv-ml\Scripts\python.exe extract_landmarks.py raw_static_both `
   --model hand_landmarker.task --output static_both.csv `
   --num-hands 2 --sign-type static
 ```
@@ -73,7 +73,7 @@ Static two-hand images/videos:
 Dynamic one-hand videos:
 
 ```powershell
-.\.venv-ml\Scripts\python.exe tools\ml\extract_landmarks.py raw_dynamic_single `
+.\.venv-ml\Scripts\python.exe extract_landmarks.py raw_dynamic_single `
   --model hand_landmarker.task --output dynamic_single.csv `
   --num-hands 1 --sign-type dynamic --frame-skip 2
 ```
@@ -81,7 +81,7 @@ Dynamic one-hand videos:
 Dynamic two-hand videos:
 
 ```powershell
-.\.venv-ml\Scripts\python.exe tools\ml\extract_landmarks.py raw_dynamic_both `
+.\.venv-ml\Scripts\python.exe extract_landmarks.py raw_dynamic_both `
   --model hand_landmarker.task --output dynamic_both.csv `
   --num-hands 2 --sign-type dynamic --frame-skip 2
 ```
@@ -92,10 +92,11 @@ relative to the first hand's wrist, preserving their spatial relationship.
 
 ## Validate coverage and capture consistency
 
-Run this before either trainer:
+Create `cvi_manifest.json` from `cvi_manifest.example.json`. Release training
+requires two independent SPED/FSL experts to approve every label. Then run:
 
 ```powershell
-.\.venv-ml\Scripts\python.exe tools\ml\validate_dataset.py static_single.csv
+.\.venv-ml\Scripts\python.exe validate_dataset.py static_single.csv
 ```
 
 The same validation runs automatically during training. It requires at least
@@ -109,12 +110,12 @@ must pass the capture-consistency checks.
 ## Inspect and train static models
 
 ```powershell
-.\.venv-ml\Scripts\python.exe tools\ml\train_landmark_classifier.py `
+.\.venv-ml\Scripts\python.exe train_landmark_classifier.py `
   static_single.csv --inspect-only
 
-.\.venv-ml\Scripts\python.exe tools\ml\train_landmark_classifier.py `
+.\.venv-ml\Scripts\python.exe train_landmark_classifier.py `
   static_single.csv --output-dir output_static_single `
-  --augmentation-copies 4
+  --augmentation-copies 4 --cvi-manifest cvi_manifest.json
 ```
 
 Use the same trainer with `static_both.csv` and a different output directory.
@@ -123,17 +124,34 @@ The trainer automatically detects 63 versus 126 features.
 ## Inspect and train dynamic models
 
 ```powershell
-.\.venv-ml\Scripts\python.exe tools\ml\train_sequence_classifier.py `
+.\.venv-ml\Scripts\python.exe train_sequence_classifier.py `
   dynamic_single.csv --inspect-only
 
-.\.venv-ml\Scripts\python.exe tools\ml\train_sequence_classifier.py `
+.\.venv-ml\Scripts\python.exe train_sequence_classifier.py `
   dynamic_single.csv --output-dir output_dynamic_single `
-  --sequence-length 24 --augmentation-copies 12
+  --sequence-length 24 --augmentation-copies 12 `
+  --cvi-manifest cvi_manifest.json
 ```
 
 Use the same sequence trainer for `dynamic_both.csv`. It resamples every video
-to a fixed temporal length and applies each spatial augmentation consistently
-across the full sequence and both hands.
+to a fixed temporal length, adds palm-normalized center displacement and
+velocity, and applies augmentation consistently across the full sequence.
+The exported target-aware policy is ten percentage points more lenient for a
+correct sign while still rejecting a different top-1 sign by margin.
+
+For non-release experiments only, `--allow-unvalidated-for-development` marks
+the output as unvalidated. Such a bundle cannot be installed into the app.
+
+## Optional Roboflow audit
+
+```powershell
+python -m pip install -r requirements-roboflow.txt
+$env:ROBOFLOW_API_KEY = "your-key"
+python roboflow_audit.py raw_dynamic_single --model-id fsl-fnlzs/3
+```
+
+This produces a review report only. It never relabels data automatically and
+Roboflow is never called by the offline mobile runtime.
 
 ## Five-person evaluation
 
@@ -147,19 +165,16 @@ does not create new people or guarantee real-world accuracy.
 
 ## Flutter installation and fallback
 
-The current FSLAMES runtime accepts only the static, single-hand bundle:
+The bundle-v2 installer accepts static/dynamic and one/two-hand model slots:
 
 ```powershell
-.\.venv-ml\Scripts\python.exe tools\ml\install_mobile_bundle.py `
+.\.venv-ml\Scripts\python.exe install_mobile_bundle.py `
   output_static_single\mobile_bundle
 ```
 
-The installer rejects incompatible two-hand or sequence bundles. The Android
-runtime also validates the model kind, preprocessing, input tensor, output
-size, labels, and bundle version. If any model is missing, rejected, or fails
-to load, FSLAMES continues using its existing CVI-validated reference/deviation
-scorer. Pass/fail, feedback, and XP remain on that fallback even when the
-static classifier is available.
+Run it once for each trained slot. The Android runtime validates model kind,
+preprocessing, input tensor, labels, bundle version, and expert-CVI status. A
+missing model safely falls back to the offline reference/deviation scorer.
 
 ## Outputs
 
